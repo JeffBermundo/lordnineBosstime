@@ -7,6 +7,7 @@ import math
 import os
 import threading
 from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
 import uvicorn
 
 # ========== CONFIGURATION ==========
@@ -17,7 +18,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # ========== FASTAPI PING ==========
 app = FastAPI()
 
-@app.get("/")
+@app.get("/", response_class=PlainTextResponse)
+@app.head("/")
 def root():
     return {"status": "Bot is running ✅"}
 
