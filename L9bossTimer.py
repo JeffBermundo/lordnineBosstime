@@ -1,21 +1,19 @@
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import math
 import os
-import json
 
 # ========== CONFIGURATION ==========
 intents = discord.Intents.default()
-LOCAL_TZ = ZoneInfo("Asia/Manila")
+LOCAL_TZ = ZoneInfo("Asia/Manila") 
 bot = commands.Bot(command_prefix="!", intents=intents)
-DATA_FILE = "boss_data.json"
 
-# Boss definitions
+# Boss definitions (your full list)
 default_bosses = {
-    # Cooldown bosses
+    # Regular cooldown bosses
     "Venatus": {"respawn_hours": 10},
     "Viorent": {"respawn_hours": 10},
     "Ego": {"respawn_hours": 21},
@@ -52,48 +50,35 @@ default_bosses = {
     "Benji": {"schedule": [("Sunday", "21:00")]},
 }
 
-# Weekday map
-WEEKDAY_MAP = {"Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
-               "Friday": 4, "Saturday": 5, "Sunday": 6}
-
-# ======== HELPER FUNCTIONS =========
-def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            raw = json.load(f)
-            # Convert any stored timestamps to aware datetime
-            for guild_id, bosses in raw.items():
-                for bname, data in bosses.items():
-                    if data.get("next_spawn"):
-                        data["next_spawn"] = datetime.fromisoformat(data["next_spawn"]).astimezone(LOCAL_TZ)
-            return raw
-    return {}
-
-def save_data():
-    data_to_save = {}
-    for gid, bosses in boss_data.items():
-        data_to_save[gid] = {}
-        for bname, data in bosses.items():
-            d = data.copy()
-            if d.get("next_spawn") and isinstance(d["next_spawn"], datetime):
-                d["next_spawn"] = d["next_spawn"].isoformat()
-            data_to_save[gid][bname] = d
-    with open(DATA_FILE, "w") as f:
-        json.dump(data_to_save, f, indent=2)
-
-boss_data = load_data()
+# Guild-based data (memory-only)
+boss_data = {}  # {guild_id: {boss_name: {...}}}
 
 def get_guild_bosses(guild_id: int):
-    gid = str(guild_id)
-    if gid not in boss_data:
-        boss_data[gid] = {
-            name: {"next_spawn": None, "auto": False, "skipped": False, **data}
+    if guild_id not in boss_data:
+        boss_data[guild_id] = {
+            name: {
+                "next_spawn": None,
+                "auto": False,
+                "skipped": False,
+                **data
+            }
             for name, data in default_bosses.items()
         }
-        save_data()
-    return boss_data[gid]
+    return boss_data[guild_id]
+
+# ======== HELPERS =========
+WEEKDAY_MAP = {
+    "Monday": 0,
+    "Tuesday": 1,
+    "Wednesday": 2,
+    "Thursday": 3,
+    "Friday": 4,
+    "Saturday": 5,
+    "Sunday": 6
+}
 
 def next_weekday_time(day_name: str, time_str: str):
+    """Return the next datetime for the given weekday and HH:MM time."""
     now = datetime.now(LOCAL_TZ)
     target_weekday = WEEKDAY_MAP[day_name]
     hour, minute = map(int, time_str.split(":"))
@@ -104,12 +89,13 @@ def next_weekday_time(day_name: str, time_str: str):
     return candidate + timedelta(days=days_ahead)
 
 def compute_next_spawn(guild_id: int, boss_name: str):
+    """Return a datetime for the next spawn of boss_name for the guild."""
     bosses = get_guild_bosses(guild_id)
     data = bosses.get(boss_name, {})
     now = datetime.now(LOCAL_TZ)
 
     if data.get("skipped"):
-        return datetime.max.replace(tzinfo=LOCAL_TZ)
+        return datetime.max
 
     ns = data.get("next_spawn")
     if isinstance(ns, datetime) and ns > now:
@@ -120,9 +106,10 @@ def compute_next_spawn(guild_id: int, boss_name: str):
         times = [next_weekday_time(day, t) for day, t in schedule]
         return min(times)
 
-    return datetime.max.replace(tzinfo=LOCAL_TZ)
+    return datetime.max  # alive without timer
 
 def get_sorted_boss_list(guild_id: int):
+    """Return bosses ordered by true upcoming respawn time (soonest first)."""
     bosses = get_guild_bosses(guild_id)
     items = list(bosses.items())
 
@@ -139,10 +126,11 @@ def get_sorted_boss_list(guild_id: int):
 # ========== EMBED ==========
 def get_embed(guild_id: int, page: int = 0):
     sorted_bosses = get_sorted_boss_list(guild_id)
+
     per_page = 10
-    total_pages = math.ceil(len(sorted_bosses)/per_page)
-    start = page*per_page
-    end = start+per_page
+    total_pages = math.ceil(len(sorted_bosses) / per_page)
+    start = page * per_page
+    end = start + per_page
     page_bosses = sorted_bosses[start:end]
 
     embed = discord.Embed(
@@ -154,21 +142,24 @@ def get_embed(guild_id: int, page: int = 0):
     for name, data in page_bosses:
         if "schedule" in data:
             next_spawn = compute_next_spawn(guild_id, name)
-            if next_spawn != datetime.max.replace(tzinfo=LOCAL_TZ):
-                remaining = next_spawn - now
-                hours, remainder = divmod(int(remaining.total_seconds()), 3600)
-                minutes = remainder // 60
-                embed_value = f"🗓️ Scheduled: {', '.join([f'{d} {t}' for d,t in data['schedule']])} ({hours}h {minutes}m left)"
-            else:
-                embed_value = f"🗓️ Scheduled"
-            embed.add_field(name=name, value=embed_value, inline=False)
-        elif data.get("next_spawn"):
+            remaining = next_spawn - now
+            hours, remainder = divmod(int(remaining.total_seconds()), 3600)
+            minutes = remainder // 60
+            embed.add_field(
+                name=name,
+                value=f"🗓️ Scheduled: {', '.join([f'{d} {t}' for d,t in data['schedule']])} "
+                      f"({hours}h {minutes}m left)" if next_spawn != datetime.max else "🗓️ Scheduled",
+                inline=False
+            )
+        elif data["next_spawn"]:
+            respawn_time = data["next_spawn"].strftime("%I:%M %p")
             remaining = data["next_spawn"] - now
             hours, remainder = divmod(int(remaining.total_seconds()), 3600)
             minutes = remainder // 60
             embed.add_field(
                 name=name,
-                value=f"Next spawn: **{data['next_spawn'].strftime('%I:%M %p')}** ({hours}h {minutes}m left)" + (" ⏳ *Auto*" if data["auto"] else ""),
+                value=f"Next spawn: **{respawn_time}** ({hours}h {minutes}m left)"
+                      + (" ⏳ *Auto*" if data["auto"] else ""),
                 inline=False
             )
         else:
@@ -177,9 +168,10 @@ def get_embed(guild_id: int, page: int = 0):
                 value="✅ Alive / Available" if not data.get("skipped") else "⏸️ Skipped",
                 inline=False
             )
+
     return embed, total_pages
 
-# ========== BUTTONS ==========
+# ========== BUTTONS / PAGINATION ==========
 class BossButton(discord.ui.Button):
     def __init__(self, guild_id: int, boss_name: str):
         super().__init__(label=f"RESET {boss_name}", style=discord.ButtonStyle.red)
@@ -193,37 +185,43 @@ class BossButton(discord.ui.Button):
             boss["next_spawn"] = datetime.now(LOCAL_TZ) + timedelta(hours=boss["respawn_hours"])
             boss["auto"] = False
             boss["skipped"] = False
-        save_data()
-        await interaction.response.edit_message(embed=get_embed(self.guild_id, 0)[0],
-                                                view=BossView(self.guild_id, 0))
+        await interaction.response.edit_message(
+            embed=get_embed(self.guild_id, 0)[0],
+            view=BossView(self.guild_id, 0)
+        )
 
 class PrevButton(discord.ui.Button):
     def __init__(self, guild_id, page, total_pages):
-        super().__init__(label="⬅️ Prev", style=discord.ButtonStyle.gray, disabled=(page==0))
+        super().__init__(
+            label="⬅️ Prev", style=discord.ButtonStyle.gray, disabled=(page == 0)
+        )
         self.guild_id = guild_id
         self.page = page
         self.total_pages = total_pages
 
     async def callback(self, interaction):
         new_page = self.page - 1
-        await interaction.response.edit_message(embed=get_embed(self.guild_id, new_page)[0],
-                                                view=BossView(self.guild_id, new_page))
+        embed, total_pages = get_embed(self.guild_id, new_page)
+        await interaction.response.edit_message(embed=embed, view=BossView(self.guild_id, new_page))
 
 class NextButton(discord.ui.Button):
     def __init__(self, guild_id, page, total_pages):
-        super().__init__(label="➡️ Next", style=discord.ButtonStyle.gray, disabled=(page+1 >= total_pages))
+        super().__init__(
+            label="➡️ Next", style=discord.ButtonStyle.gray, disabled=(page + 1 >= total_pages)
+        )
         self.guild_id = guild_id
         self.page = page
         self.total_pages = total_pages
 
     async def callback(self, interaction):
         new_page = self.page + 1
-        await interaction.response.edit_message(embed=get_embed(self.guild_id, new_page)[0],
-                                                view=BossView(self.guild_id, new_page))
+        embed, total_pages = get_embed(self.guild_id, new_page)
+        await interaction.response.edit_message(embed=embed, view=BossView(self.guild_id, new_page))
 
 class BossView(discord.ui.View):
     def __init__(self, guild_id: int, page: int):
         super().__init__(timeout=None)
+        self.guild_id = guild_id
         sorted_bosses = get_sorted_boss_list(guild_id)
         per_page = 10
         total_pages = math.ceil(len(sorted_bosses)/per_page)
@@ -242,39 +240,41 @@ class BossView(discord.ui.View):
 @bot.tree.command(name="boss", description="Show the boss respawn tracker")
 async def boss(interaction: discord.Interaction):
     guild_id = interaction.guild_id
-    embed, _ = get_embed(guild_id, 0)
+    embed, total_pages = get_embed(guild_id, 0)
     await interaction.response.send_message(embed=embed, view=BossView(guild_id, 0))
 
 @bot.tree.command(name="maintenance", description="Set all bosses as alive (maintenance over)")
 async def maintenance(interaction: discord.Interaction):
     guild_id = interaction.guild_id
     bosses = get_guild_bosses(guild_id)
-    for b in bosses.values():
-        b["next_spawn"] = None
-        b["auto"] = False
-        b["skipped"] = False
-    save_data()
+    for boss in bosses.values():
+        boss["next_spawn"] = None
+        boss["auto"] = False
+        boss["skipped"] = False
     await interaction.response.send_message("🛠️ Maintenance complete — all bosses are now alive!")
     embed, _ = get_embed(guild_id, 0)
     await interaction.channel.send(embed=embed, view=BossView(guild_id, 0))
 
-@bot.tree.command(name="skipall", description="Skip all cooldown bosses")
+@bot.tree.command(name="skipall", description="Skip all cooldown bosses (clear timers and mark as skipped)")
 async def skipall(interaction: discord.Interaction):
     guild_id = interaction.guild_id
     bosses = get_guild_bosses(guild_id)
     count = 0
-    for data in bosses.values():
-        if "respawn_hours" in data:
+    for name, data in bosses.items():
+        if "respawn_hours" in data:  # Only cooldown bosses
             data["next_spawn"] = None
             data["auto"] = False
             data["skipped"] = True
             count += 1
-    save_data()
-    await interaction.response.send_message(f"⏭️ Skipped all {count} cooldown bosses.")
+
+    await interaction.response.send_message(
+        f"⏭️ Skipped all {count} cooldown bosses. They’ll appear at the bottom of the list."
+    )
+
     embed, _ = get_embed(guild_id, 0)
     await interaction.channel.send(embed=embed, view=BossView(guild_id, 0))
 
-@bot.tree.command(name="setkilltime", description="Manually set boss killtime")
+@bot.tree.command(name="setkilltime", description="Manually set boss killtime (hours/minutes to respawn)")
 @app_commands.describe(boss="Boss name", hours="Hours until respawn", minutes="Minutes until respawn")
 async def setkilltime(interaction: discord.Interaction, boss: str, hours: int, minutes: int = 0):
     guild_id = interaction.guild_id
@@ -282,14 +282,16 @@ async def setkilltime(interaction: discord.Interaction, boss: str, hours: int, m
     if boss not in bosses:
         await interaction.response.send_message(f"❌ Boss `{boss}` not found.", ephemeral=True)
         return
-    bosses[boss]["next_spawn"] = datetime.now(LOCAL_TZ) + timedelta(hours=hours, minutes=minutes)
+    # Only allow setting for cooldown-based bosses (you can store next_spawn for scheduled too if you want)
+    respawn_hours = default_bosses.get(boss, {}).get("respawn_hours")
+    dt = datetime.now(LOCAL_TZ) + timedelta(hours=hours, minutes=minutes)
+    bosses[boss]["next_spawn"] = dt
     bosses[boss]["auto"] = False
     bosses[boss]["skipped"] = False
-    save_data()
-    dt = bosses[boss]["next_spawn"]
     await interaction.response.send_message(f"✅ Set `{boss}` to respawn in {hours}h {minutes}m (at {dt.strftime('%Y-%m-%d %H:%M')}).")
     embed, _ = get_embed(guild_id, 0)
     await interaction.channel.send(embed=embed, view=BossView(guild_id, 0))
+
 
 # ========== READY ==========
 @bot.event
