@@ -2,11 +2,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import math
 import os
 
 # ========== CONFIGURATION ==========
 intents = discord.Intents.default()
+LOCAL_TZ = ZoneInfo("Asia/Manila") 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Boss definitions (your full list)
@@ -77,7 +79,7 @@ WEEKDAY_MAP = {
 
 def next_weekday_time(day_name: str, time_str: str):
     """Return the next datetime for the given weekday and HH:MM time."""
-    now = datetime.now()
+    now = datetime.now(LOCAL_TZ)
     target_weekday = WEEKDAY_MAP[day_name]
     hour, minute = map(int, time_str.split(":"))
     candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -90,7 +92,7 @@ def compute_next_spawn(guild_id: int, boss_name: str):
     """Return a datetime for the next spawn of boss_name for the guild."""
     bosses = get_guild_bosses(guild_id)
     data = bosses.get(boss_name, {})
-    now = datetime.now()
+    now = datetime.now(LOCAL_TZ)
 
     if data.get("skipped"):
         return datetime.max
@@ -135,7 +137,7 @@ def get_embed(guild_id: int, page: int = 0):
         title=f"🕒 Boss Respawn Tracker (Page {page+1}/{total_pages})",
         color=discord.Color.blurple()
     )
-    now = datetime.now()
+    now = datetime.now(LOCAL_TZ)
 
     for name, data in page_bosses:
         if "schedule" in data:
@@ -180,7 +182,7 @@ class BossButton(discord.ui.Button):
         bosses = get_guild_bosses(self.guild_id)
         boss = bosses[self.boss_name]
         if "respawn_hours" in boss:
-            boss["next_spawn"] = datetime.now() + timedelta(hours=boss["respawn_hours"])
+            boss["next_spawn"] = datetime.now(LOCAL_TZ) + timedelta(hours=boss["respawn_hours"])
             boss["auto"] = False
             boss["skipped"] = False
         await interaction.response.edit_message(
@@ -282,7 +284,7 @@ async def setkilltime(interaction: discord.Interaction, boss: str, hours: int, m
         return
     # Only allow setting for cooldown-based bosses (you can store next_spawn for scheduled too if you want)
     respawn_hours = default_bosses.get(boss, {}).get("respawn_hours")
-    dt = datetime.now() + timedelta(hours=hours, minutes=minutes)
+    dt = datetime.now(LOCAL_TZ) + timedelta(hours=hours, minutes=minutes)
     bosses[boss]["next_spawn"] = dt
     bosses[boss]["auto"] = False
     bosses[boss]["skipped"] = False
