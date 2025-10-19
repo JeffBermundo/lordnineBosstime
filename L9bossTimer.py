@@ -5,13 +5,30 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import math
 import os
+import threading
+from fastapi import FastAPI
+import uvicorn
 
 # ========== CONFIGURATION ==========
 intents = discord.Intents.default()
 LOCAL_TZ = ZoneInfo("Asia/Manila") 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Boss definitions (your full list)
+# ========== FASTAPI PING ==========
+app = FastAPI()
+
+@app.get("/")
+def root():
+    return {"status": "Bot is running ✅"}
+
+def run_api():
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+# Start the API in a separate thread
+threading.Thread(target=run_api, daemon=True).start()
+
+
+# ========== BOSS DEFINITIONS ==========
 default_bosses = {
     # Regular cooldown bosses
     "Venatus": {"respawn_hours": 10},
@@ -46,7 +63,7 @@ default_bosses = {
     "Ringor": {"schedule": [("Saturday", "17:00")]},
     "Roderick": {"schedule": [("Friday", "19:00")]},
     "Auruaq": {"schedule": [("Wednesday", "21:00"), ("Friday", "22:00")]},
-    "Chaiflock": {"schedule": [("Sunday", "22:00")]},
+    "Chaiflock": {"schedule": [("Saturday", "22:00")]},
     "Benji": {"schedule": [("Sunday", "21:00")]},
 }
 
@@ -78,7 +95,6 @@ WEEKDAY_MAP = {
 }
 
 def next_weekday_time(day_name: str, time_str: str):
-    """Return the next datetime for the given weekday and HH:MM time."""
     now = datetime.now(LOCAL_TZ)
     target_weekday = WEEKDAY_MAP[day_name]
     hour, minute = map(int, time_str.split(":"))
@@ -89,13 +105,12 @@ def next_weekday_time(day_name: str, time_str: str):
     return candidate + timedelta(days=days_ahead)
 
 def compute_next_spawn(guild_id: int, boss_name: str):
-    """Return a datetime for the next spawn of boss_name for the guild."""
     bosses = get_guild_bosses(guild_id)
     data = bosses.get(boss_name, {})
     now = datetime.now(LOCAL_TZ)
 
     if data.get("skipped"):
-        return datetime.max
+        return datetime.max.replace(tzinfo=LOCAL_TZ)
 
     ns = data.get("next_spawn")
     if isinstance(ns, datetime) and ns > now:
@@ -106,10 +121,9 @@ def compute_next_spawn(guild_id: int, boss_name: str):
         times = [next_weekday_time(day, t) for day, t in schedule]
         return min(times)
 
-    return datetime.max  # alive without timer
+    return datetime.max.replace(tzinfo=LOCAL_TZ)  # alive without timer
 
 def get_sorted_boss_list(guild_id: int):
-    """Return bosses ordered by true upcoming respawn time (soonest first)."""
     bosses = get_guild_bosses(guild_id)
     items = list(bosses.items())
 
@@ -126,7 +140,6 @@ def get_sorted_boss_list(guild_id: int):
 # ========== EMBED ==========
 def get_embed(guild_id: int, page: int = 0):
     sorted_bosses = get_sorted_boss_list(guild_id)
-
     per_page = 10
     total_pages = math.ceil(len(sorted_bosses) / per_page)
     start = page * per_page
@@ -148,7 +161,7 @@ def get_embed(guild_id: int, page: int = 0):
             embed.add_field(
                 name=name,
                 value=f"🗓️ Scheduled: {', '.join([f'{d} {t}' for d,t in data['schedule']])} "
-                      f"({hours}h {minutes}m left)" if next_spawn != datetime.max else "🗓️ Scheduled",
+                      f"({hours}h {minutes}m left)" if next_spawn != datetime.max.replace(tzinfo=LOCAL_TZ) else "🗓️ Scheduled",
                 inline=False
             )
         elif data["next_spawn"]:
@@ -192,9 +205,7 @@ class BossButton(discord.ui.Button):
 
 class PrevButton(discord.ui.Button):
     def __init__(self, guild_id, page, total_pages):
-        super().__init__(
-            label="⬅️ Prev", style=discord.ButtonStyle.gray, disabled=(page == 0)
-        )
+        super().__init__(label="⬅️ Prev", style=discord.ButtonStyle.gray, disabled=(page == 0))
         self.guild_id = guild_id
         self.page = page
         self.total_pages = total_pages
@@ -206,9 +217,7 @@ class PrevButton(discord.ui.Button):
 
 class NextButton(discord.ui.Button):
     def __init__(self, guild_id, page, total_pages):
-        super().__init__(
-            label="➡️ Next", style=discord.ButtonStyle.gray, disabled=(page + 1 >= total_pages)
-        )
+        super().__init__(label="➡️ Next", style=discord.ButtonStyle.gray, disabled=(page + 1 >= total_pages))
         self.guild_id = guild_id
         self.page = page
         self.total_pages = total_pages
@@ -282,16 +291,15 @@ async def setkilltime(interaction: discord.Interaction, boss: str, hours: int, m
     if boss not in bosses:
         await interaction.response.send_message(f"❌ Boss `{boss}` not found.", ephemeral=True)
         return
-    # Only allow setting for cooldown-based bosses (you can store next_spawn for scheduled too if you want)
-    respawn_hours = default_bosses.get(boss, {}).get("respawn_hours")
     dt = datetime.now(LOCAL_TZ) + timedelta(hours=hours, minutes=minutes)
     bosses[boss]["next_spawn"] = dt
     bosses[boss]["auto"] = False
     bosses[boss]["skipped"] = False
-    await interaction.response.send_message(f"✅ Set `{boss}` to respawn in {hours}h {minutes}m (at {dt.strftime('%Y-%m-%d %H:%M')}).")
+    await interaction.response.send_message(
+        f"✅ Set `{boss}` to respawn in {hours}h {minutes}m (at {dt.strftime('%Y-%m-%d %H:%M')})."
+    )
     embed, _ = get_embed(guild_id, 0)
     await interaction.channel.send(embed=embed, view=BossView(guild_id, 0))
-
 
 # ========== READY ==========
 @bot.event
