@@ -21,7 +21,7 @@ app = FastAPI()
 @app.get("/", response_class=PlainTextResponse)
 @app.head("/")
 def root():
-    return {"status": "Bot is running ✅"}
+    return "Bot is running ✅"
 
 def run_api():
     uvicorn.run(app, host="0.0.0.0", port=8000)
